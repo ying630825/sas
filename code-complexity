@@ -1,0 +1,192 @@
+以下是基于Python的**SAS代码复杂度分析工具**的实现代码，包含关键指标检测和报告生成功能。该工具可快速扫描SAS程序文件，识别高复杂度代码段，并为后续转换为Python提供优化建议。
+
+---
+
+### **工具功能概述**
+1. **静态代码解析**：识别数据步骤、过程步、宏、条件分支等结构。
+2. **复杂度指标计算**：圈复杂度、嵌套深度、宏参数数量等。
+3. **报告生成**：输出Markdown格式的复杂度报告。
+
+---
+
+### **完整代码实现**
+
+```python
+import re
+import argparse
+from pathlib import Path
+from typing import Dict, List, Any
+
+class SASComplexityAnalyzer:
+    def __init__(self):
+        self.metrics = {
+            "data_steps": 0,
+            "proc_steps": 0,
+            "macro_defs": 0,
+            "macro_calls": 0,
+            "if_statements": 0,
+            "do_loops": 0,
+            "merge_ops": 0,
+            "proc_sql": 0,
+            "complexity_issues": []
+        }
+        self.current_nesting = 0
+        self.max_nesting_depth = 0
+
+    def analyze_file(self, file_path: Path) -> Dict[str, Any]:
+        with open(file_path, 'r') as f:
+            code = f.read()
+        
+        self._detect_data_proc_steps(code)
+        self._detect_macros(code)
+        self._detect_control_flow(code)
+        self._detect_data_operations(code)
+        self._calculate_cyclomatic_complexity()
+        
+        return {
+            "file": str(file_path),
+            "metrics": self.metrics,
+            "max_nesting_depth": self.max_nesting_depth
+        }
+
+    def _detect_data_proc_steps(self, code: str) -> None:
+        # 检测DATA步骤和PROC步骤
+        self.metrics["data_steps"] = len(re.findall(r'\bdata\b\s+[\w\.]+;', code, re.IGNORECASE))
+        self.metrics["proc_steps"] = len(re.findall(r'\bproc\b\s+(\w+)', code, re.IGNORECASE))
+
+    def _detect_macros(self, code: str) -> None:
+        # 检测宏定义和调用
+        macro_defs = re.finditer(r'%macro\s+(\w+)(\(.*?\))?;', code, re.IGNORECASE)
+        for match in macro_defs:
+            self.metrics["macro_defs"] += 1
+            macro_params = match.group(2).count(',') + 1 if match.group(2) else 0
+            if macro_params > 3:
+                self.metrics["complexity_issues"].append(f"宏{match.group(1)}参数过多（{macro_params}个）")
+
+        self.metrics["macro_calls"] = len(re.findall(r'%\w+\(', code))
+
+    def _detect_control_flow(self, code: str) -> None:
+        # 检测IF/DO语句和嵌套深度
+        in_block = False
+        for line in code.split('\n'):
+            line = line.strip().lower()
+            if 'if' in line and 'then' in line:
+                self.metrics["if_statements"] += 1
+            if 'do' in line and ('while' in line or 'until' in line or ';' in line):
+                self.metrics["do_loops"] += 1
+                self.current_nesting += 1
+                self.max_nesting_depth = max(self.max_nesting_depth, self.current_nesting)
+                in_block = True
+            if 'end;' in line and in_block:
+                self.current_nesting -= 1
+                in_block = False
+
+    def _detect_data_operations(self, code: str) -> None:
+        # 检测MERGE和PROC SQL
+        self.metrics["merge_ops"] = len(re.findall(r'\bmerge\b', code, re.IGNORECASE))
+        self.metrics["proc_sql"] = len(re.findall(r'\bproc\s+sql\b', code, re.IGNORECASE))
+
+    def _calculate_cyclomatic_complexity(self) -> None:
+        # 计算圈复杂度
+        cc = self.metrics["if_statements"] + self.metrics["do_loops"] + 1
+        self.metrics["cyclomatic_complexity"] = cc
+        if cc > 10:
+            self.metrics["complexity_issues"].append(f"圈复杂度较高（{cc}），建议拆分逻辑")
+
+def generate_report(analysis_result: Dict, output_file: Path) -> None:
+    report = f"""# SAS代码复杂度分析报告
+
+## 文件: {analysis_result['file']}
+
+### 基础指标
+- DATA步骤数量: {analysis_result['metrics']['data_steps']}
+- PROC步骤数量: {analysis_result['metrics']['proc_steps']}
+- 宏定义数量: {analysis_result['metrics']['macro_defs']}
+- 宏调用次数: {analysis_result['metrics']['macro_calls']}
+
+### 控制流复杂度
+- IF语句数量: {analysis_result['metrics']['if_statements']}
+- DO循环数量: {analysis_result['metrics']['do_loops']}
+- 最大嵌套深度: {analysis_result['max_nesting_depth']}
+- 圈复杂度: {analysis_result['metrics']['cyclomatic_complexity']}
+
+### 数据操作
+- MERGE操作次数: {analysis_result['metrics']['merge_ops']}
+- PROC SQL使用次数: {analysis_result['metrics']['proc_sql']}
+
+### 高复杂度问题
+{chr(10).join(['- ' + issue for issue in analysis_result['metrics']['complexity_issues']]) if analysis_result['metrics']['complexity_issues'] else '- 无'}
+"""
+
+    with open(output_file, 'w') as f:
+        f.write(report)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="SAS代码复杂度分析工具")
+    parser.add_argument("input", help="SAS文件或目录路径")
+    parser.add_argument("-o", "--output", default="sas_complexity_report.md", help="输出报告路径")
+    args = parser.parse_args()
+
+    analyzer = SASComplexityAnalyzer()
+    input_path = Path(args.input)
+
+    if input_path.is_dir():
+        results = []
+        for sas_file in input_path.glob("*.sas"):
+            results.append(analyzer.analyze_file(sas_file))
+    else:
+        results = [analyzer.analyze_file(input_path)]
+
+    for result in results:
+        generate_report(result, Path(args.output))
+
+    print(f"分析完成！报告已保存至 {args.output}")
+```
+
+---
+
+### **使用说明**
+1. **安装依赖**：仅需Python 3.6+，无需额外库。
+2. **运行命令**：
+   ```bash
+   # 分析单个文件
+   python sas_analyzer.py input.sas -o report.md
+  
+   # 分析整个目录
+   python sas_analyzer.py sas_code/ -o reports/
+   ```
+3. **报告示例**：
+   ```markdown
+   # SAS代码复杂度分析报告
+
+   ## 文件: example.sas
+
+   ### 基础指标
+   - DATA步骤数量: 3
+   - PROC步骤数量: 2
+   - 宏定义数量: 1
+   - 宏调用次数: 5
+
+   ### 控制流复杂度
+   - IF语句数量: 8
+   - DO循环数量: 3
+   - 最大嵌套深度: 2
+   - 圈复杂度: 12
+
+   ### 数据操作
+   - MERGE操作次数: 1
+   - PROC SQL使用次数: 1
+
+   ### 高复杂度问题
+   - 圈复杂度较高（12），建议拆分逻辑
+   - 宏calculate_stats参数过多（4个）
+   ```
+
+---
+
+### **扩展性建议**
+1. **增加AST解析**：使用`ANTLR`生成SAS语法解析器，替代正则表达式以提高准确性。
+2. **性能分析**：集成动态分析（如通过SAS日志解析执行时间）。
+3. **Python转换建议**：根据检测到的问题，生成针对性的代码转换模板（如将`DATA`步骤映射为`pandas`操作）。
+
+该工具可作为SAS到Python转换流程的前置分析模块，帮助开发者快速定位高风险代码段，提高迁移效率。
